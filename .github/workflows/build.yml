@@ -1,67 +1,38 @@
-name: C test
+name: CMake
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id  }}
-  cancel-in-progress: true
-
-on:
-  push:
-  pull_request:
-    branches:
-    - main
-
-permissions: read-all
+on: [push, pull_request]
 
 jobs:
-  trigger-codebuild:
+
+  skip_check:
+    # This is to avoid duplicated jobs when working with PRs and branches,
+    # and avoid builds when only README changes are made, but can be removed
+    name: Skip Check
     runs-on: self-hosted
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v1
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@master
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          skip_after_successful_duplicate: 'false'
+          paths_ignore: '["**.md"]'
 
-      # Choose your own OS and AMI
-      #
-      - name: Check if CodeBuild project exists
-        id: check_project
-        run: |
-          PROJECT_EXISTS=$(aws codebuild list-projects | grep 'C-Build-Test' || true)
-          if [ -n "$PROJECT_EXISTS" ]; then
-            echo "Project already exists. Skipping creation."
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-      - name: Build CodeBuild Project Compute Type
-        if: steps.check_project.outputs.exists == 'false'
-        run: |          
-          aws codebuild create-project \
-              --name C-Build-Test \
-              --source "type=GITHUB,location=https://github.com/outofcontrol/Build-Test" \
-              --artifacts "type=S3,location=khr-github-build-artifacts,packaging=ZIP" \
-              --environment "type=LINUX_CONTAINER,computeType=BUILD_GENERAL1_LARGE,image=aws/codebuild/standard:5.0" \
-              --service-role arn:aws:iam::452667803910:role/service-role/codebuild-Vulka-Loader-Test-service-role
+  build:
+    name: Build
+    runs-on: self-hosted
+    needs: skip_check
+    if: ${{ needs.skip_check.outputs.should_skip != 'true' }}
 
-      - name: Start CodeBuild
-        id: codebuild
-        run: |
-          buildId=$(aws codebuild start-build \
-            --project-name C-Build-Test \
-            --query 'build.id' \
-            --output text \
-            --environment-variables-override name=PR_NUMBER,value=${{ github.event.pull_request.number }},type=PLAINTEXT)
-          echo "::set-output name=buildId::$buildId"
-        env:
-          AWS_DEFAULT_REGION: us-east-1
+    steps:
+    - uses: actions/checkout@v2
 
-      - name: Wait for CodeBuild result
-        run: |
-          aws codebuild batch-get-builds --ids ${{ steps.codebuild.outputs.buildId }} --query 'builds[].buildStatus' --output text
-        env:
-          AWS_DEFAULT_REGION: us-east-1
+    - name: Configure CMake
+      run: cmake .
+
+    - name: Build
+      run: make
+
+    - name: Test
+      # Same than `make test'
+      run: ctest
